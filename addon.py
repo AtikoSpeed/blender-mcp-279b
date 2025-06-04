@@ -1,12 +1,11 @@
 # Code created by Siddharth Ahuja: www.github.com/ahujasid © 2025
-
+# Modified for Blender version 2.79b by Atakan (github.com/AtikoSpeed) with the help of AI
 import bpy
 import mathutils
 import json
 import threading
 import socket
 import time
-import requests
 import tempfile
 import traceback
 import os
@@ -15,17 +14,37 @@ from bpy.props import StringProperty, IntProperty, BoolProperty, EnumProperty
 import io
 from contextlib import redirect_stdout
 
+# Try to import requests, but handle gracefully if not available
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
+    print("Warning: requests library not available. PolyHaven features will be disabled.")
+
+# Try to import urllib for fallback HTTP functionality
+try:
+    import urllib.request
+    import urllib.parse
+    HAS_URLLIB = True
+except ImportError:
+    HAS_URLLIB = False
+    print("Warning: urllib not available. HTTP functionality will be limited.")
+
 bl_info = {
     "name": "Blender MCP",
     "author": "BlenderMCP",
     "version": (1, 2),
-    "blender": (3, 0, 0),
+    "blender": (2, 79, 0),
     "location": "View3D > Sidebar > BlenderMCP",
     "description": "Connect Blender to Claude via MCP",
     "category": "Interface",
 }
 
 RODIN_FREE_TRIAL_KEY = "k9TcfFoEhNd9cCPP2guHAHHHkctZHIRhZDywZ1euGUXwihbYLpOjQhofby80NJez"
+
+# Global variable to store the server instance
+_blendermcp_server = None
 
 class BlenderMCPServer:
     def __init__(self, host='localhost', port=9876):
@@ -54,9 +73,9 @@ class BlenderMCPServer:
             self.server_thread.daemon = True
             self.server_thread.start()
             
-            print(f"BlenderMCP server started on {self.host}:{self.port}")
+            print("BlenderMCP server started on {}:{}".format(self.host, self.port))
         except Exception as e:
-            print(f"Failed to start server: {str(e)}")
+            print("Failed to start server: {}".format(str(e)))
             self.stop()
             
     def stop(self):
@@ -91,7 +110,7 @@ class BlenderMCPServer:
                 # Accept new connection
                 try:
                     client, address = self.socket.accept()
-                    print(f"Connected to client: {address}")
+                    print("Connected to client: {}".format(address))
                     
                     # Handle client in a separate thread
                     client_thread = threading.Thread(
@@ -104,10 +123,10 @@ class BlenderMCPServer:
                     # Just check running condition
                     continue
                 except Exception as e:
-                    print(f"Error accepting connection: {str(e)}")
+                    print("Error accepting connection: {}".format(str(e)))
                     time.sleep(0.5)
             except Exception as e:
-                print(f"Error in server loop: {str(e)}")
+                print("Error in server loop: {}".format(str(e)))
                 if not self.running:
                     break
                 time.sleep(0.5)
@@ -135,38 +154,34 @@ class BlenderMCPServer:
                         command = json.loads(buffer.decode('utf-8'))
                         buffer = b''
                         
-                        # Execute command in Blender's main thread
-                        def execute_wrapper():
+                        # Execute command directly (Blender 2.79 compatible)
+                        # Note: In Blender 2.79, we execute directly since timers aren't available
+                        try:
+                            response = self.execute_command(command)
+                            response_json = json.dumps(response)
                             try:
-                                response = self.execute_command(command)
-                                response_json = json.dumps(response)
-                                try:
-                                    client.sendall(response_json.encode('utf-8'))
-                                except:
-                                    print("Failed to send response - client disconnected")
-                            except Exception as e:
-                                print(f"Error executing command: {str(e)}")
-                                traceback.print_exc()
-                                try:
-                                    error_response = {
-                                        "status": "error",
-                                        "message": str(e)
-                                    }
-                                    client.sendall(json.dumps(error_response).encode('utf-8'))
-                                except:
-                                    pass
-                            return None
-                        
-                        # Schedule execution in main thread
-                        bpy.app.timers.register(execute_wrapper, first_interval=0.0)
-                    except json.JSONDecodeError:
+                                client.sendall(response_json.encode('utf-8'))
+                            except:
+                                print("Failed to send response - client disconnected")
+                        except Exception as e:
+                            print("Error executing command: {}".format(str(e)))
+                            traceback.print_exc()
+                            try:
+                                error_response = {
+                                    "status": "error",
+                                    "message": str(e)
+                                }
+                                client.sendall(json.dumps(error_response).encode('utf-8'))
+                            except:
+                                pass
+                    except ValueError:  # JSONDecodeError wasn't in Python 3.5
                         # Incomplete data, wait for more
                         pass
                 except Exception as e:
-                    print(f"Error receiving data: {str(e)}")
+                    print("Error receiving data: {}".format(str(e)))
                     break
         except Exception as e:
-            print(f"Error in client handler: {str(e)}")
+            print("Error in client handler: {}".format(str(e)))
         finally:
             try:
                 client.close()
@@ -180,7 +195,7 @@ class BlenderMCPServer:
             return self._execute_command_internal(command)
                 
         except Exception as e:
-            print(f"Error executing command: {str(e)}")
+            print("Error executing command: {}".format(str(e)))
             traceback.print_exc()
             return {"status": "error", "message": str(e)}
 
@@ -224,16 +239,16 @@ class BlenderMCPServer:
         handler = handlers.get(cmd_type)
         if handler:
             try:
-                print(f"Executing handler for {cmd_type}")
+                print("Executing handler for {}".format(cmd_type))
                 result = handler(**params)
-                print(f"Handler execution complete")
+                print("Handler execution complete")
                 return {"status": "success", "result": result}
             except Exception as e:
-                print(f"Error in handler: {str(e)}")
+                print("Error in handler: {}".format(str(e)))
                 traceback.print_exc()
                 return {"status": "error", "message": str(e)}
         else:
-            return {"status": "error", "message": f"Unknown command type: {cmd_type}"}
+            return {"status": "error", "message": "Unknown command type: {}".format(cmd_type)}
 
     
     
@@ -264,10 +279,10 @@ class BlenderMCPServer:
                 }
                 scene_info["objects"].append(obj_info)
             
-            print(f"Scene info collected: {len(scene_info['objects'])} objects")
+            print("Scene info collected: {} objects".format(len(scene_info['objects'])))
             return scene_info
         except Exception as e:
-            print(f"Error in get_scene_info: {str(e)}")
+            print("Error in get_scene_info: {}".format(str(e)))
             traceback.print_exc()
             return {"error": str(e)}
     
@@ -280,15 +295,19 @@ class BlenderMCPServer:
         # Get the bounding box corners in local space
         local_bbox_corners = [mathutils.Vector(corner) for corner in obj.bound_box]
 
-        # Convert to world coordinates
-        world_bbox_corners = [obj.matrix_world @ corner for corner in local_bbox_corners]
+        # Convert to world coordinates  
+        world_bbox_corners = []
+        for corner in local_bbox_corners:
+            world_corner = obj.matrix_world * corner
+            world_bbox_corners.append(world_corner)
 
         # Compute axis-aligned min/max coordinates
         min_corner = mathutils.Vector(map(min, zip(*world_bbox_corners)))
         max_corner = mathutils.Vector(map(max, zip(*world_bbox_corners)))
 
         return [
-            [*min_corner], [*max_corner]
+            [min_corner.x, min_corner.y, min_corner.z], 
+            [max_corner.x, max_corner.y, max_corner.z]
         ]
 
 
@@ -297,7 +316,7 @@ class BlenderMCPServer:
         """Get detailed information about a specific object"""
         obj = bpy.data.objects.get(name)
         if not obj:
-            raise ValueError(f"Object not found: {name}")
+            raise ValueError("Object not found: {}".format(name))
         
         # Basic object info
         obj_info = {
@@ -306,7 +325,7 @@ class BlenderMCPServer:
             "location": [obj.location.x, obj.location.y, obj.location.z],
             "rotation": [obj.rotation_euler.x, obj.rotation_euler.y, obj.rotation_euler.z],
             "scale": [obj.scale.x, obj.scale.y, obj.scale.z],
-            "visible": obj.visible_get(),
+            "visible": not obj.hide,  # In Blender 2.79, use hide property
             "materials": [],
         }
 
@@ -345,33 +364,39 @@ class BlenderMCPServer:
             captured_output = capture_buffer.getvalue()
             return {"executed": True, "result": captured_output}
         except Exception as e:
-            raise Exception(f"Code execution error: {str(e)}")
+            raise Exception("Code execution error: {}".format(str(e)))
     
     
 
     def get_polyhaven_categories(self, asset_type):
         """Get categories for a specific asset type from Polyhaven"""
+        if not HAS_REQUESTS:
+            return {"error": "requests library not available. PolyHaven features are disabled."}
+            
         try:
             if asset_type not in ["hdris", "textures", "models", "all"]:
-                return {"error": f"Invalid asset type: {asset_type}. Must be one of: hdris, textures, models, all"}
+                return {"error": "Invalid asset type: {}. Must be one of: hdris, textures, models, all".format(asset_type)}
                 
-            response = requests.get(f"https://api.polyhaven.com/categories/{asset_type}")
+            response = requests.get("https://api.polyhaven.com/categories/{}".format(asset_type))
             if response.status_code == 200:
                 return {"categories": response.json()}
             else:
-                return {"error": f"API request failed with status code {response.status_code}"}
+                return {"error": "API request failed with status code {}".format(response.status_code)}
         except Exception as e:
             return {"error": str(e)}
     
     def search_polyhaven_assets(self, asset_type=None, categories=None):
         """Search for assets from Polyhaven with optional filtering"""
+        if not HAS_REQUESTS:
+            return {"error": "requests library not available. PolyHaven features are disabled."}
+            
         try:
             url = "https://api.polyhaven.com/assets"
             params = {}
             
             if asset_type and asset_type != "all":
                 if asset_type not in ["hdris", "textures", "models"]:
-                    return {"error": f"Invalid asset type: {asset_type}. Must be one of: hdris, textures, models, all"}
+                    return {"error": "Invalid asset type: {}. Must be one of: hdris, textures, models, all".format(asset_type)}
                 params["type"] = asset_type
                 
             if categories:
@@ -390,16 +415,19 @@ class BlenderMCPServer:
                 
                 return {"assets": limited_assets, "total_count": len(assets), "returned_count": len(limited_assets)}
             else:
-                return {"error": f"API request failed with status code {response.status_code}"}
+                return {"error": "API request failed with status code {}".format(response.status_code)}
         except Exception as e:
             return {"error": str(e)}
     
     def download_polyhaven_asset(self, asset_id, asset_type, resolution="1k", file_format=None):
+        if not HAS_REQUESTS:
+            return {"error": "requests library not available. PolyHaven features are disabled."}
+            
         try:
             # First get the files information
-            files_response = requests.get(f"https://api.polyhaven.com/files/{asset_id}")
+            files_response = requests.get("https://api.polyhaven.com/files/{}".format(asset_id))
             if files_response.status_code != 200:
-                return {"error": f"Failed to get asset files: {files_response.status_code}"}
+                return {"error": "Failed to get asset files: {}".format(files_response.status_code)}
             
             files_data = files_response.json()
             
@@ -415,11 +443,11 @@ class BlenderMCPServer:
                     
                     # For HDRIs, we need to save to a temporary file first
                     # since Blender can't properly load HDR data directly from memory
-                    with tempfile.NamedTemporaryFile(suffix=f".{file_format}", delete=False) as tmp_file:
+                    with tempfile.NamedTemporaryFile(suffix=".{}".format(file_format), delete=False) as tmp_file:
                         # Download the file
                         response = requests.get(file_url)
                         if response.status_code != 200:
-                            return {"error": f"Failed to download HDRI: {response.status_code}"}
+                            return {"error": "Failed to download HDRI: {}".format(response.status_code)}
                         
                         tmp_file.write(response.content)
                         tmp_path = tmp_file.name
@@ -489,13 +517,13 @@ class BlenderMCPServer:
                         
                         return {
                             "success": True, 
-                            "message": f"HDRI {asset_id} imported successfully",
+                            "message": "HDRI {} imported successfully".format(asset_id),
                             "image_name": env_tex.image.name
                         }
                     except Exception as e:
-                        return {"error": f"Failed to set up HDRI in Blender: {str(e)}"}
+                        return {"error": "Failed to set up HDRI in Blender: {}".format(str(e))}
                 else:
-                    return {"error": f"Requested resolution or format not available for this HDRI"}
+                    return {"error": "Requested resolution or format not available for this HDRI"}
                     
             elif asset_type == "textures":
                 if not file_format:
@@ -511,7 +539,7 @@ class BlenderMCPServer:
                                 file_url = file_info["url"]
                                 
                                 # Use NamedTemporaryFile like we do for HDRIs
-                                with tempfile.NamedTemporaryFile(suffix=f".{file_format}", delete=False) as tmp_file:
+                                with tempfile.NamedTemporaryFile(suffix=".{}".format(file_format), delete=False) as tmp_file:
                                     # Download the file
                                     response = requests.get(file_url)
                                     if response.status_code == 200:
@@ -520,7 +548,7 @@ class BlenderMCPServer:
                                         
                                         # Load image from temporary file
                                         image = bpy.data.images.load(tmp_path)
-                                        image.name = f"{asset_id}_{map_type}.{file_format}"
+                                        image.name = "{}_{}.{}".format(asset_id, map_type, file_format)
                                         
                                         # Pack the image into .blend file
                                         image.pack()
@@ -546,7 +574,7 @@ class BlenderMCPServer:
                                             pass
                 
                     if not downloaded_maps:
-                        return {"error": f"No texture maps found for the requested resolution and format"}
+                        return {"error": "No texture maps found for the requested resolution and format"}
                     
                     # Create a new material with the downloaded textures
                     mat = bpy.data.materials.new(name=asset_id)
@@ -624,13 +652,13 @@ class BlenderMCPServer:
                     
                     return {
                         "success": True, 
-                        "message": f"Texture {asset_id} imported as material",
+                        "message": "Texture {} imported as material".format(asset_id),
                         "material": mat.name,
                         "maps": list(downloaded_maps.keys())
                     }
                 
                 except Exception as e:
-                    return {"error": f"Failed to process textures: {str(e)}"}
+                    return {"error": "Failed to process textures: {}".format(str(e))}
                 
             elif asset_type == "models":
                 # For models, prefer glTF format if available
@@ -652,7 +680,7 @@ class BlenderMCPServer:
                         
                         response = requests.get(file_url)
                         if response.status_code != 200:
-                            return {"error": f"Failed to download model: {response.status_code}"}
+                            return {"error": "Failed to download model: {}".format(response.status_code)}
                         
                         with open(main_file_path, "wb") as f:
                             f.write(response.content)
@@ -673,7 +701,7 @@ class BlenderMCPServer:
                                     with open(include_file_path, "wb") as f:
                                         f.write(include_response.content)
                                 else:
-                                    print(f"Failed to download included file: {include_path}")
+                                    print("Failed to download included file: {}".format(include_path))
                         
                         # Import the model into Blender
                         if file_format == "gltf" or file_format == "glb":
@@ -692,32 +720,32 @@ class BlenderMCPServer:
                                 if obj is not None:
                                     bpy.context.collection.objects.link(obj)
                         else:
-                            return {"error": f"Unsupported model format: {file_format}"}
+                            return {"error": "Unsupported model format: {}".format(file_format)}
                         
                         # Get the names of imported objects
                         imported_objects = [obj.name for obj in bpy.context.selected_objects]
                         
                         return {
                             "success": True, 
-                            "message": f"Model {asset_id} imported successfully",
+                            "message": "Model {} imported successfully".format(asset_id),
                             "imported_objects": imported_objects
                         }
                     except Exception as e:
-                        return {"error": f"Failed to import model: {str(e)}"}
+                        return {"error": "Failed to import model: {}".format(str(e))}
                     finally:
                         # Clean up temporary directory
                         try:
                             shutil.rmtree(temp_dir)
                         except:
-                            print(f"Failed to clean up temporary directory: {temp_dir}")
+                            print("Failed to clean up temporary directory: {}".format(temp_dir))
                 else:
-                    return {"error": f"Requested format or resolution not available for this model"}
+                    return {"error": "Requested format or resolution not available for this model"}
                 
             else:
-                return {"error": f"Unsupported asset type: {asset_type}"}
+                return {"error": "Unsupported asset type: {}".format(asset_type)}
                 
         except Exception as e:
-            return {"error": f"Failed to download asset: {str(e)}"}
+            return {"error": "Failed to download asset: {}".format(str(e))}
 
     def set_texture(self, object_name, texture_id):
         """Apply a previously downloaded Polyhaven texture to an object by creating a new material"""
@@ -725,11 +753,11 @@ class BlenderMCPServer:
             # Get the object
             obj = bpy.data.objects.get(object_name)
             if not obj:
-                return {"error": f"Object not found: {object_name}"}
+                return {"error": "Object not found: {}".format(object_name)}
             
             # Make sure object can accept materials
             if not hasattr(obj, 'data') or not hasattr(obj.data, 'materials'):
-                return {"error": f"Object {object_name} cannot accept materials"}
+                return {"error": "Object {} cannot accept materials".format(object_name)}
             
             # Find all images related to this texture and ensure they're properly loaded
             texture_images = {}
@@ -758,19 +786,19 @@ class BlenderMCPServer:
                         img.pack()
                     
                     texture_images[map_type] = img
-                    print(f"Loaded texture map: {map_type} - {img.name}")
+                    print("Loaded texture map: {} - {}".format(map_type, img.name))
                     
                     # Debug info
-                    print(f"Image size: {img.size[0]}x{img.size[1]}")
-                    print(f"Color space: {img.colorspace_settings.name}")
-                    print(f"File format: {img.file_format}")
-                    print(f"Is packed: {bool(img.packed_file)}")
+                    print("Image size: {}x{}".format(img.size[0], img.size[1]))
+                    print("Color space: {}".format(img.colorspace_settings.name))
+                    print("File format: {}".format(img.file_format))
+                    print("Is packed: {}".format(bool(img.packed_file)))
 
             if not texture_images:
-                return {"error": f"No texture images found for: {texture_id}. Please download the texture first."}
+                return {"error": "No texture images found for: {}. Please download the texture first.".format(texture_id)}
             
             # Create a new material
-            new_mat_name = f"{texture_id}_material_{object_name}"
+            new_mat_name = "{}_material_{}".format(texture_id, object_name)
             
             # Remove any existing material with this name to avoid conflicts
             existing_mat = bpy.data.materials.get(new_mat_name)
@@ -868,21 +896,21 @@ class BlenderMCPServer:
             for map_name in ['color', 'diffuse', 'albedo']:
                 if map_name in texture_nodes:
                     links.new(texture_nodes[map_name].outputs['Color'], principled.inputs['Base Color'])
-                    print(f"Connected {map_name} to Base Color")
+                    print("Connected {} to Base Color".format(map_name))
                     break
             
             # Handle roughness
             for map_name in ['roughness', 'rough']:
                 if map_name in texture_nodes:
                     links.new(texture_nodes[map_name].outputs['Color'], principled.inputs['Roughness'])
-                    print(f"Connected {map_name} to Roughness")
+                    print("Connected {} to Roughness".format(map_name))
                     break
             
             # Handle metallic
             for map_name in ['metallic', 'metalness', 'metal']:
                 if map_name in texture_nodes:
                     links.new(texture_nodes[map_name].outputs['Color'], principled.inputs['Metallic'])
-                    print(f"Connected {map_name} to Metallic")
+                    print("Connected {} to Metallic".format(map_name))
                     break
             
             # Handle normal maps
@@ -892,7 +920,7 @@ class BlenderMCPServer:
                     normal_map_node.location = (100, 100)
                     links.new(texture_nodes[map_name].outputs['Color'], normal_map_node.inputs['Color'])
                     links.new(normal_map_node.outputs['Normal'], principled.inputs['Normal'])
-                    print(f"Connected {map_name} to Normal")
+                    print("Connected {} to Normal".format(map_name))
                     break
             
             # Handle displacement
@@ -903,7 +931,7 @@ class BlenderMCPServer:
                     disp_node.inputs['Scale'].default_value = 0.1  # Reduce displacement strength
                     links.new(texture_nodes[map_name].outputs['Color'], disp_node.inputs['Height'])
                     links.new(disp_node.outputs['Displacement'], output.inputs['Displacement'])
-                    print(f"Connected {map_name} to Displacement")
+                    print("Connected {} to Displacement".format(map_name))
                     break
             
             # Handle ARM texture (Ambient Occlusion, Roughness, Metallic)
@@ -1001,7 +1029,7 @@ class BlenderMCPServer:
                     connections = []
                     for output in node.outputs:
                         for link in output.links:
-                            connections.append(f"{output.name} → {link.to_node.name}.{link.to_socket.name}")
+                            connections.append("{} → {}.{}".format(output.name, link.to_node.name, link.to_socket.name))
                     
                     material_info["texture_nodes"].append({
                         "name": node.name,
@@ -1012,19 +1040,26 @@ class BlenderMCPServer:
             
             return {
                 "success": True,
-                "message": f"Created new material and applied texture {texture_id} to {object_name}",
+                "message": "Created new material and applied texture {} to {}".format(texture_id, object_name),
                 "material": new_mat.name,
                 "maps": texture_maps,
                 "material_info": material_info
             }
             
         except Exception as e:
-            print(f"Error in set_texture: {str(e)}")
+            print("Error in set_texture: {}".format(str(e)))
             traceback.print_exc()
-            return {"error": f"Failed to apply texture: {str(e)}"}
+            return {"error": "Failed to apply texture: {}".format(str(e))}
 
     def get_polyhaven_status(self):
         """Get the current status of PolyHaven integration"""
+        if not HAS_REQUESTS:
+            return {
+                "enabled": False,
+                "error": "requests library not available",
+                "message": "PolyHaven features require the requests library which is not available in this Blender installation."
+            }
+        
         enabled = bpy.context.scene.blendermcp_use_polyhaven
         if enabled:
             return {"enabled": True, "message": "PolyHaven integration is enabled and ready to use."}
@@ -1035,7 +1070,7 @@ class BlenderMCPServer:
                             1. In the 3D Viewport, find the BlenderMCP panel in the sidebar (press N if hidden)
                             2. Check the 'Use assets from Poly Haven' checkbox
                             3. Restart the connection to Claude"""
-        }
+            }
 
     #region Hyper3D
     def get_hyper3d_status(self):
@@ -1052,8 +1087,8 @@ class BlenderMCPServer:
                                 4. Restart the connection to Claude"""
                 }
             mode = bpy.context.scene.blendermcp_hyper3d_mode
-            message = f"Hyper3D Rodin integration is enabled and ready to use. Mode: {mode}. " + \
-                f"Key type: {'private' if bpy.context.scene.blendermcp_hyper3d_api_key != RODIN_FREE_TRIAL_KEY else 'free_trial'}"
+            message = "Hyper3D Rodin integration is enabled and ready to use. Mode: {}. ".format(mode) + \
+                "Key type: {}".format('private' if bpy.context.scene.blendermcp_hyper3d_api_key != RODIN_FREE_TRIAL_KEY else 'free_trial')
             return {
                 "enabled": True,
                 "message": message
@@ -1068,26 +1103,29 @@ class BlenderMCPServer:
             }
 
     def create_rodin_job(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hyper3d_mode:
-            case "MAIN_SITE":
-                return self.create_rodin_job_main_site(*args, **kwargs)
-            case "FAL_AI":
-                return self.create_rodin_job_fal_ai(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hyper3D Rodin mode!"
+        mode = bpy.context.scene.blendermcp_hyper3d_mode
+        if mode == "MAIN_SITE":
+            return self.create_rodin_job_main_site(*args, **kwargs)
+        elif mode == "FAL_AI":
+            return self.create_rodin_job_fal_ai(*args, **kwargs)
+        else:
+            return "Error: Unknown Hyper3D Rodin mode!"
 
     def create_rodin_job_main_site(
             self,
-            text_prompt: str=None,
-            images: list[tuple[str, str]]=None,
+            text_prompt=None,
+            images=None,
             bbox_condition=None
         ):
+        if not HAS_REQUESTS:
+            return {"error": "requests library not available. Hyper3D features are disabled."}
+            
         try:
             if images is None:
                 images = []
             """Call Rodin API, get the job uuid and subscription key"""
             files = [
-                *[("images", (f"{i:04d}{img_suffix}", img)) for i, (img_suffix, img) in enumerate(images)],
+                *[("images", ("{:04d}{}".format(i, img_suffix), img)) for i, (img_suffix, img) in enumerate(images)],
                 ("tier", (None, "Sketch")),
                 ("mesh_mode", (None, "Raw")),
             ]
@@ -1098,7 +1136,7 @@ class BlenderMCPServer:
             response = requests.post(
                 "https://hyperhuman.deemos.com/api/v2/rodin",
                 headers={
-                    "Authorization": f"Bearer {bpy.context.scene.blendermcp_hyper3d_api_key}",
+                    "Authorization": "Bearer {}".format(bpy.context.scene.blendermcp_hyper3d_api_key),
                 },
                 files=files
             )
@@ -1109,10 +1147,13 @@ class BlenderMCPServer:
     
     def create_rodin_job_fal_ai(
             self,
-            text_prompt: str=None,
-            images: list[tuple[str, str]]=None,
+            text_prompt=None,
+            images=None,
             bbox_condition=None
         ):
+        if not HAS_REQUESTS:
+            return {"error": "requests library not available. Hyper3D features are disabled."}
+            
         try:
             req_data = {
                 "tier": "Sketch",
@@ -1126,7 +1167,7 @@ class BlenderMCPServer:
             response = requests.post(
                 "https://queue.fal.run/fal-ai/hyper3d/rodin",
                 headers={
-                    "Authorization": f"Key {bpy.context.scene.blendermcp_hyper3d_api_key}",
+                    "Authorization": "Key {}".format(bpy.context.scene.blendermcp_hyper3d_api_key),
                     "Content-Type": "application/json",
                 },
                 json=req_data
@@ -1137,20 +1178,20 @@ class BlenderMCPServer:
             return {"error": str(e)}
 
     def poll_rodin_job_status(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hyper3d_mode:
-            case "MAIN_SITE":
-                return self.poll_rodin_job_status_main_site(*args, **kwargs)
-            case "FAL_AI":
-                return self.poll_rodin_job_status_fal_ai(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hyper3D Rodin mode!"
+        mode = bpy.context.scene.blendermcp_hyper3d_mode
+        if mode == "MAIN_SITE":
+            return self.poll_rodin_job_status_main_site(*args, **kwargs)
+        elif mode == "FAL_AI":
+            return self.poll_rodin_job_status_fal_ai(*args, **kwargs)
+        else:
+            return "Error: Unknown Hyper3D Rodin mode!"
 
-    def poll_rodin_job_status_main_site(self, subscription_key: str):
+    def poll_rodin_job_status_main_site(self, subscription_key):
         """Call the job status API to get the job status"""
         response = requests.post(
             "https://hyperhuman.deemos.com/api/v2/status",
             headers={
-                "Authorization": f"Bearer {bpy.context.scene.blendermcp_hyper3d_api_key}",
+                "Authorization": "Bearer {}".format(bpy.context.scene.blendermcp_hyper3d_api_key),
             },
             json={
                 "subscription_key": subscription_key,
@@ -1161,12 +1202,12 @@ class BlenderMCPServer:
             "status_list": [i["status"] for i in data["jobs"]]
         }
     
-    def poll_rodin_job_status_fal_ai(self, request_id: str):
+    def poll_rodin_job_status_fal_ai(self, request_id):
         """Call the job status API to get the job status"""
         response = requests.get(
-            f"https://queue.fal.run/fal-ai/hyper3d/requests/{request_id}/status",
+            "https://queue.fal.run/fal-ai/hyper3d/requests/{}/status".format(request_id),
             headers={
-                "Authorization": f"KEY {bpy.context.scene.blendermcp_hyper3d_api_key}",
+                "Authorization": "KEY {}".format(bpy.context.scene.blendermcp_hyper3d_api_key),
             },
         )
         data = response.json()
@@ -1233,27 +1274,27 @@ class BlenderMCPServer:
                 mesh_obj.name = mesh_name
                 if mesh_obj.data.name is not None:
                     mesh_obj.data.name = mesh_name
-                print(f"Mesh renamed to: {mesh_name}")
+                print("Mesh renamed to: {}".format(mesh_name))
         except Exception as e:
             print("Having issue with renaming, give up renaming.")
 
         return mesh_obj
 
     def import_generated_asset(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hyper3d_mode:
-            case "MAIN_SITE":
-                return self.import_generated_asset_main_site(*args, **kwargs)
-            case "FAL_AI":
-                return self.import_generated_asset_fal_ai(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hyper3D Rodin mode!"
+        mode = bpy.context.scene.blendermcp_hyper3d_mode
+        if mode == "MAIN_SITE":
+            return self.import_generated_asset_main_site(*args, **kwargs)
+        elif mode == "FAL_AI":
+            return self.import_generated_asset_fal_ai(*args, **kwargs)
+        else:
+            return "Error: Unknown Hyper3D Rodin mode!"
 
-    def import_generated_asset_main_site(self, task_uuid: str, name: str):
+    def import_generated_asset_main_site(self, task_uuid, name):
         """Fetch the generated asset, import into blender"""
         response = requests.post(
             "https://hyperhuman.deemos.com/api/v2/download",
             headers={
-                "Authorization": f"Bearer {bpy.context.scene.blendermcp_hyper3d_api_key}",
+                "Authorization": "Bearer {}".format(bpy.context.scene.blendermcp_hyper3d_api_key),
             },
             json={
                 'task_uuid': task_uuid
@@ -1314,12 +1355,12 @@ class BlenderMCPServer:
         except Exception as e:
             return {"succeed": False, "error": str(e)}
     
-    def import_generated_asset_fal_ai(self, request_id: str, name: str):
+    def import_generated_asset_fal_ai(self, request_id, name):
         """Fetch the generated asset, import into blender"""
         response = requests.get(
-            f"https://queue.fal.run/fal-ai/hyper3d/requests/{request_id}",
+            "https://queue.fal.run/fal-ai/hyper3d/requests/{}".format(request_id),
             headers={
-                "Authorization": f"Key {bpy.context.scene.blendermcp_hyper3d_api_key}",
+                "Authorization": "Key {}".format(bpy.context.scene.blendermcp_hyper3d_api_key),
             }
         )
         data_ = response.json()
@@ -1398,7 +1439,7 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
             layout.operator("blendermcp.start_server", text="Connect to MCP server")
         else:
             layout.operator("blendermcp.stop_server", text="Disconnect from MCP server")
-            layout.label(text=f"Running on port {scene.blendermcp_port}")
+            layout.label(text="Running on port {}".format(scene.blendermcp_port))
 
 # Operator to set Hyper3D API Key
 class BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey(bpy.types.Operator):
@@ -1418,14 +1459,15 @@ class BLENDERMCP_OT_StartServer(bpy.types.Operator):
     bl_description = "Start the BlenderMCP server to connect with Claude"
     
     def execute(self, context):
+        global _blendermcp_server
         scene = context.scene
         
         # Create a new server instance
-        if not hasattr(bpy.types, "blendermcp_server") or not bpy.types.blendermcp_server:
-            bpy.types.blendermcp_server = BlenderMCPServer(port=scene.blendermcp_port)
+        if _blendermcp_server is None:
+            _blendermcp_server = BlenderMCPServer(port=scene.blendermcp_port)
         
         # Start the server
-        bpy.types.blendermcp_server.start()
+        _blendermcp_server.start()
         scene.blendermcp_server_running = True
         
         return {'FINISHED'}
@@ -1437,12 +1479,13 @@ class BLENDERMCP_OT_StopServer(bpy.types.Operator):
     bl_description = "Stop the connection to Claude"
     
     def execute(self, context):
+        global _blendermcp_server
         scene = context.scene
         
         # Stop the server if it exists
-        if hasattr(bpy.types, "blendermcp_server") and bpy.types.blendermcp_server:
-            bpy.types.blendermcp_server.stop()
-            del bpy.types.blendermcp_server
+        if _blendermcp_server is not None:
+            _blendermcp_server.stop()
+            _blendermcp_server = None
         
         scene.blendermcp_server_running = False
         
@@ -1500,10 +1543,11 @@ def register():
     print("BlenderMCP addon registered")
 
 def unregister():
+    global _blendermcp_server
     # Stop the server if it's running
-    if hasattr(bpy.types, "blendermcp_server") and bpy.types.blendermcp_server:
-        bpy.types.blendermcp_server.stop()
-        del bpy.types.blendermcp_server
+    if _blendermcp_server is not None:
+        _blendermcp_server.stop()
+        _blendermcp_server = None
     
     bpy.utils.unregister_class(BLENDERMCP_PT_Panel)
     bpy.utils.unregister_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
